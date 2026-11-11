@@ -233,8 +233,10 @@ def train_baseline() -> float:
 # ---------------------------------------------------------------- 页面
 st.title("🩺 家庭日常开销体检")
 st.caption("上传账单 → 自动分类汇总 → 4 张图表 → AI 体检报告。原始文件不落盘，匿名统计可一键清除。")
+st.markdown("[🌐 在线演示](https://individual-project-bill-health-8bx2jkyfzw3kzfgr5hoyah.streamlit.app/) · "
+            "[📦 项目仓库](https://github.com/xiaoyu0616007/individual-project-bill-health)")
 
-with st.expander("🔐 隐私承诺（请先读这三句）", expanded=True):
+with st.expander("🔐 隐私承诺（请先读这三句）"):
     st.markdown(
         "1. **原始账单文件不保存**：仅在当前页面会话内解析，不上传云端、不写入服务器磁盘；\n"
         "2. **只存三个匿名字段**：日期、分类、金额存入本地 SQLite，商户名与商品名从不写入，点下方按钮随时一键清除；\n"
@@ -256,7 +258,6 @@ with st.expander("📥 不会导出账单？三步搞定（微信/支付宝）")
     )
 
 uploaded = st.file_uploader("上传账单 CSV 文件", type=["csv"])
-use_sample = st.button(" or 先看样例数据的体检报告", type="secondary")
 
 df = None
 source = None
@@ -266,16 +267,20 @@ if uploaded is not None:
         source = uploaded.name
     except Exception as e:
         st.error(f"解析失败：{e}")
-elif use_sample or st.session_state.get("sample_loaded"):
+else:
+    # 默认直接展示样例数据的体检报告，访客打开即看到完整效果
     df = pd.read_csv(DATA_DIR / "sample_bill.csv", parse_dates=["交易时间"])
     df = df[df["收/支"] == "支出"].copy()
     df["月份"] = df["交易时间"].dt.to_period("M").astype(str)
     source = "sample_bill.csv（虚构样例）"
-    st.session_state.sample_loaded = True
 
 if df is not None and len(df) > 0:
-    st.success(f"解析成功：**{len(df)}** 条支出记录，来源 {source}。数据范围 "
-               f"{df['交易时间'].min().date()} 至 {df['交易时间'].max().date()}。")
+    if source and "样例" in source:
+        st.info("📦 当前展示的是**虚构样例数据**（201 条）的体检报告。在下方上传你自己的账单 CSV，"
+                "图表与报告会即时重算为你的真实结果；原始文件不会被保存。")
+    else:
+        st.success(f"解析成功：**{len(df)}** 条支出记录，来源 {source}。数据范围 "
+                   f"{df['交易时间'].min().date()} 至 {df['交易时间'].max().date()}。")
     save_anonymous(df)
 
     monthly, cat_month, mom, last, prev = summarize(df)
@@ -311,6 +316,6 @@ if df is not None and len(df) > 0:
             st.warning("未找到 data/uci_credit_card.csv")
 else:
     st.markdown(
-        "点击上方 **“先看样例数据的体检报告”** 体验完整流程，或上传你自己的账单文件。\n\n"
-        "样例为虚构数据（201 条，2026 年 5-7 月），字段结构对齐微信/支付宝官方导出格式。"
+        "请上传微信或支付宝导出的 CSV 账单文件，即可生成你自己的体检报告。\n\n"
+        "（若页面没有显示图表，可刷新重试；样例数据已内置，正常情况下打开页面即可看到示例效果。）"
     )

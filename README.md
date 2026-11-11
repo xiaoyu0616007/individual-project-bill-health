@@ -7,6 +7,7 @@
 [![Plotly](https://img.shields.io/badge/Plotly-交互图表-3F3F8F)](https://plotly.com/python/)
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-逻辑回归-F7931E)](https://scikit-learn.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![在线演示](https://img.shields.io/badge/在线演示-立即体验-brightgreen)](https://individual-project-bill-health-8bx2jkyfzw3kzfgr5hoyah.streamlit.app/)
 
 《数据分析与可视化》课程个人项目 · 西南财经大学 · 周笑宇
 
@@ -100,7 +101,7 @@ UCI 机器学习仓库（UCI Machine Learning Repository）是加州大学欧文
 
 **方式一：在线使用（推荐）**
 
-部署完成后访问云端地址即可，见下方[云端部署](#云端部署)。
+直接访问 **https://individual-project-bill-health-8bx2jkyfzw3kzfgr5hoyah.streamlit.app/** ，打开即可看到样例数据生成的完整体检报告，无需注册、无需配置任何东西；上传自己的账单 CSV 后，图表与报告即时切换为真实结果。
 
 **方式二：本地运行**
 
@@ -147,7 +148,7 @@ individual-project-bill-health/
 部署平台：Streamlit Community Cloud（免费），直连本仓库，`git push` 后自动更新。
 
 - **仓库地址**：https://github.com/xiaoyu0616007/individual-project-bill-health
-- **应用地址**：（部署完成后填写 `https://xxx.streamlit.app`）
+- **应用地址**：https://individual-project-bill-health-8bx2jkyfzw3kzfgr5hoyah.streamlit.app/
 - **分支 / 入口**：`main` / `app.py`
 
 更新应用后执行 `git add -A`、`git commit -m "更新应用"`、`git push origin main` 即可同步上线。
