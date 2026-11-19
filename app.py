@@ -186,21 +186,31 @@ def load_macro() -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def macro_compare(cat_month, last) -> pd.DataFrame | None:
-    """你的最近月开销占比 vs 全国居民人均消费支出构成（2025，国家统计局）。"""
+def macro_compare(cat_month, last, scope: str = "全国") -> pd.DataFrame | None:
+    """你的最近月开销占比 vs 居民人均消费支出构成（2025，国家统计局）。"""
     macro = load_macro()
-    if macro.empty or cat_month[last].sum() <= 0:
+    col = f"{scope}占比_%"
+    if macro.empty or col not in macro.columns or cat_month[last].sum() <= 0:
         return None
     share = cat_month[last] / cat_month[last].sum() * 100
     user = share.groupby(share.index.map(lambda c: CAT_TO_MACRO.get(c, c))).sum()
     cmp = pd.DataFrame({
         "你的占比（%）": user,
-        "全国居民平均（%）": macro.set_index("类别")["占比_%"],
+        f"{scope}居民平均（%）": macro.set_index("类别")[col],
     }).fillna(0.0)
-    cmp = cmp[(cmp["你的占比（%）"] > 0) | (cmp["全国居民平均（%）"] > 0)]
+    cmp = cmp[(cmp["你的占比（%）"] > 0) | (cmp[f"{scope}居民平均（%）"] > 0)]
     cmp = cmp.sort_values("你的占比（%）", ascending=True)
     cmp.index.name = "类别"
     return cmp.reset_index()
+
+
+def macro_per_capita(scope: str = "全国") -> float | None:
+    """该口径下 2025 年居民人均消费支出（元）。"""
+    macro = load_macro()
+    col = f"{scope}人均支出_元"
+    if macro.empty or col not in macro.columns:
+        return None
+    return float(macro[col].sum())
 
 
 @st.cache_data(show_spinner=False)
@@ -286,19 +296,23 @@ if df is not None and len(df) > 0:
         (c1 if i % 2 == 0 else c2).plotly_chart(fig, use_container_width=True)
 
     # ---- 宏观基准对比 ----
-    st.subheader("🧭 你的开销结构 vs 全国居民平均")
-    cmp = macro_compare(cat_month, last)
+    st.subheader("🧭 你的开销结构 vs 居民平均")
+    scope = st.radio("对比基准", ["全国", "城镇", "农村"], horizontal=True, key="macro_scope")
+    cmp = macro_compare(cat_month, last, scope)
     if cmp is not None and len(cmp) > 0:
+        avg_col = f"{scope}居民平均（%）"
         figm = px.bar(
-            cmp, y="类别", x=["你的占比（%）", "全国居民平均（%）"],
+            cmp, y="类别", x=["你的占比（%）", avg_col],
             orientation="h", barmode="group",
             title=f"最近月（{last}）各大类支出占比对比（%）",
         )
         figm.update_layout(legend_title_text="")
         st.plotly_chart(figm, use_container_width=True)
+        pc = macro_per_capita(scope)
+        pc_txt = f"，{scope}居民人均消费支出约 {pc:,.0f} 元/年" if pc else ""
         st.caption(
-            "全国数据来源：国家统计局《2025年居民收入和消费支出情况》（2026年1月19日发布，"
-            "基于全国16万户住户收支与生活状况调查）。你的账单分类到八大类的对应为近似映射"
+            f"基准：国家统计局《2025年居民收入和消费支出情况》（2026 年 1 月 19 日发布，"
+            f"基于全国 16 万户住户收支与生活状况调查）{pc_txt}。你的账单分类到八大类的对应为近似映射"
             "（餐饮外卖→食品烟酒、交通出行与通讯宽带→交通通信、水电燃气→居住、日用品→生活用品及服务、"
             "休闲娱乐→教育文化娱乐、医疗健康→医疗保健、购物→其他用品及服务），占比对比仅供参考。"
         )
