@@ -18,77 +18,12 @@ from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from bill_parser import parse_bill
+
 st.set_page_config(page_title="家庭日常开销体检", page_icon="🩺", layout="wide")
 
 DATA_DIR = Path(__file__).parent / "data"
 FALLBACK_REPORT = None  # 无 AI key 时的纯统计模板报告在 build_fallback() 中生成
-
-
-# ---------------------------------------------------------------- 解析
-def _find_header_row(lines, max_scan=30):
-    """微信/支付宝导出的 CSV 前几行是说明文字，扫描出真正表头所在行。"""
-    keys = ("交易时间", "支付时间", "日期", "时间")
-    for i, line in enumerate(lines[:max_scan]):
-        if any(k in line for k in keys) and ("金额" in line or "金额(元)" in line):
-            return i
-    return 0
-
-
-def parse_bill(uploaded) -> pd.DataFrame:
-    """兼容三种格式：微信官方导出、支付宝官方导出、开发样例（对齐样例字段）。"""
-    raw = uploaded.getvalue()
-    for enc in ("utf-8-sig", "utf-8", "gbk"):
-        try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        text = raw.decode("utf-8-sig", errors="replace")
-
-    lines = text.splitlines()
-    header_idx = _find_header_row(lines)
-    df = pd.read_csv(pd.io.common.StringIO("\n".join(lines[header_idx:])))
-
-    # 字段名模糊匹配（对应风险五的应对动作）
-    colmap = {}
-    for c in df.columns:
-        cs = str(c).strip()
-        if cs in ("交易时间", "支付时间", "付款时间", "交易创建时间", "日期"):
-            colmap["交易时间"] = c
-        elif cs in ("金额", "金额(元)", "金额（元）", "交易金额"):
-            colmap["金额"] = c
-        elif cs in ("收/支", "收支", "资金流向", "收/付款"):
-            colmap["收/支"] = c
-        elif cs in ("交易分类", "分类", "交易类型", "类型"):
-            colmap["交易分类"] = c
-        elif cs in ("商品", "商品名称", "交易对方", "商品/商户"):
-            colmap["商品"] = c
-        elif cs in ("支付方式", "收/付款方式", "付款方式"):
-            colmap["支付方式"] = c
-    missing = [k for k in ("交易时间", "金额") if k not in colmap]
-    if missing:
-        raise ValueError(f"未识别到必需字段：{'、'.join(missing)}。请确认使用的是官方导出的账单文件。")
-
-    out = pd.DataFrame()
-    out["交易时间"] = pd.to_datetime(df[colmap["交易时间"]], errors="coerce")
-    out["金额"] = (
-        df[colmap["金额"]]
-        .astype(str)
-        .str.replace(r"[¥,\s]", "", regex=True)
-        .astype(float)
-    )
-    out["交易分类"] = df[colmap["交易分类"]].fillna("其他").astype(str) if "交易分类" in colmap else "其他"
-    out["商品"] = df[colmap["商品"]].astype(str) if "商品" in colmap else ""
-    out["支付方式"] = df[colmap["支付方式"]].astype(str) if "支付方式" in colmap else ""
-
-    if "收/支" in colmap:
-        direction = df[colmap["收/支"]].astype(str)
-        out = out[direction.str.contains("支", na=False) & ~direction.str.contains("不计", na=False)]
-    out = out.dropna(subset=["交易时间"])
-    out["金额"] = out["金额"].abs()
-    out["月份"] = out["交易时间"].dt.to_period("M").astype(str)
-    return out.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------- 统计
@@ -230,6 +165,52 @@ def train_baseline() -> float:
     return float(scores.mean())
 
 
+# ---------------------------------------------------------------- 宏观基准（国家统计局官方数据）
+CAT_TO_MACRO = {
+    "餐饮外卖": "食品烟酒",
+    "交通出行": "交通通信",
+    "通讯宽带": "交通通信",
+    "医疗健康": "医疗保健",
+    "休闲娱乐": "教育文化娱乐",
+    "日用品": "生活用品及服务",
+    "水电燃气": "居住",
+    "购物": "其他用品及服务",
+}
+
+
+@st.cache_data(show_spinner=False)
+def load_macro() -> pd.DataFrame:
+    path = DATA_DIR / "macro_consumption_2025.csv"
+    if not path.exists():
+        return pd.DataFrame()
+    return pd.read_csv(path)
+
+
+def macro_compare(cat_month, last) -> pd.DataFrame | None:
+    """你的最近月开销占比 vs 全国居民人均消费支出构成（2025，国家统计局）。"""
+    macro = load_macro()
+    if macro.empty or cat_month[last].sum() <= 0:
+        return None
+    share = cat_month[last] / cat_month[last].sum() * 100
+    user = share.groupby(share.index.map(lambda c: CAT_TO_MACRO.get(c, c))).sum()
+    cmp = pd.DataFrame({
+        "你的占比（%）": user,
+        "全国居民平均（%）": macro.set_index("类别")["占比_%"],
+    }).fillna(0.0)
+    cmp = cmp[(cmp["你的占比（%）"] > 0) | (cmp["全国居民平均（%）"] > 0)]
+    cmp = cmp.sort_values("你的占比（%）", ascending=True)
+    cmp.index.name = "类别"
+    return cmp.reset_index()
+
+
+@st.cache_data(show_spinner=False)
+def load_retail():
+    path = DATA_DIR / "online_retail_daily.csv"
+    if not path.exists():
+        return None
+    return pd.read_csv(path, parse_dates=["交易日期"])
+
+
 # ---------------------------------------------------------------- 页面
 st.title("🩺 家庭日常开销体检")
 st.caption("上传账单 → 自动分类汇总 → 4 张图表 → AI 体检报告。原始文件不落盘，匿名统计可一键清除。")
@@ -304,6 +285,26 @@ if df is not None and len(df) > 0:
     for i, fig in enumerate(figs):
         (c1 if i % 2 == 0 else c2).plotly_chart(fig, use_container_width=True)
 
+    # ---- 宏观基准对比 ----
+    st.subheader("🧭 你的开销结构 vs 全国居民平均")
+    cmp = macro_compare(cat_month, last)
+    if cmp is not None and len(cmp) > 0:
+        figm = px.bar(
+            cmp, y="类别", x=["你的占比（%）", "全国居民平均（%）"],
+            orientation="h", barmode="group",
+            title=f"最近月（{last}）各大类支出占比对比（%）",
+        )
+        figm.update_layout(legend_title_text="")
+        st.plotly_chart(figm, use_container_width=True)
+        st.caption(
+            "全国数据来源：国家统计局《2025年居民收入和消费支出情况》（2026年1月19日发布，"
+            "基于全国16万户住户收支与生活状况调查）。你的账单分类到八大类的对应为近似映射"
+            "（餐饮外卖→食品烟酒、交通出行与通讯宽带→交通通信、水电燃气→居住、日用品→生活用品及服务、"
+            "休闲娱乐→教育文化娱乐、医疗健康→医疗保健、购物→其他用品及服务），占比对比仅供参考。"
+        )
+    else:
+        st.caption("暂无宏观数据文件（data/macro_consumption_2025.csv）或账单无有效金额。")
+
     # ---- 建模基准 ----
     with st.expander("🔬 第三方数据集建模基准（UCI 30,000 条，逻辑回归 5 折交叉验证）"):
         auc = train_baseline()
@@ -314,6 +315,30 @@ if df is not None and len(df) > 0:
                        "该模型仅用于分析与建模方法验证，不用于你的账单。")
         else:
             st.warning("未找到 data/uci_credit_card.csv")
+
+    # ---- 第二公开数据集基准 ----
+    with st.expander("🧪 第二公开数据集基准（UCI Online Retail 电商订单流水）"):
+        retail = load_retail()
+        if retail is not None and len(retail) > 0:
+            st.caption(
+                f"数据范围 {retail['交易日期'].min():%Y-%m-%d} 至 {retail['交易日期'].max():%Y-%m-%d}，"
+                f"共 {len(retail):,} 组日交易记录。同一套\"日期/分类/金额\"匿名三字段管线，"
+                "直接适配另一来源的真实流水数据。"
+            )
+            retail["月份"] = retail["交易日期"].dt.to_period("M").astype(str)
+            m2 = retail.groupby("月份")["金额"].sum()
+            st.plotly_chart(px.line(m2.reset_index(), x="月份", y="金额", markers=True,
+                                    title="电商流水月度交易额走势（英镑，第三方数据）"),
+                            use_container_width=True)
+            top2 = retail.groupby("交易分类")["金额"].sum().sort_values(ascending=False)
+            st.plotly_chart(px.bar(top2.reset_index(), x="金额", y="交易分类", orientation="h",
+                                   title="电商流水商品类别交易额 TOP（关键词近似归类）")
+                            .update_yaxes(autorange="reversed"),
+                            use_container_width=True)
+            st.caption("数据来源：UCI Online Retail（Dua & Graff, 2019），英国电商个人订单流水；"
+                       "本表为其按日聚合的精简版，商品类别由商品描述关键词近似归类，仅用于验证解析与聚合管线对不同来源流水的适配性。")
+        else:
+            st.warning("未找到 data/online_retail_daily.csv")
 else:
     st.markdown(
         "请上传微信或支付宝导出的 CSV 账单文件，即可生成你自己的体检报告。\n\n"
